@@ -95,16 +95,32 @@ kyc-doc-detection/
 
 ---
 
-## 📈 Résultats attendus
+## 📈 Résultats obtenus
 
-Après ~50 epochs sur T4 (Colab free) :
+Entraînement : **48 epochs** sur T4 (Colab free), early stopping (patience=15), durée totale **1h41**.
 
-| Métrique | Cible | Lecture |
-|---|---|---|
-| mAP@50 | > 0.85 | Détections "OK pour humain" |
-| mAP@50-95 | > 0.65 | Détections précises |
-| mAP `photo` | > 0.95 | Classe critique pour 2.2 |
-| Precision | > 0.90 | Peu de faux positifs |
+### Métriques globales (val set)
+
+| Métrique | Cible | Résultat | Statut |
+|---|---|---|---|
+| mAP@50 | > 0.85 | **0.995** | ✅ |
+| mAP@50-95 | > 0.65 | **0.911** | ✅ |
+| Precision | > 0.90 | **0.995** | ✅ |
+| Recall | > 0.85 | **0.990** | ✅ |
+
+### Métriques par classe
+
+| Classe | Precision | Recall | mAP@50 | mAP@50-95 |
+|---|---|---|---|---|
+| **all** | 0.996 | 0.991 | 0.995 | 0.912 |
+| photo ⭐ | 0.998 | 1.000 | 0.995 | **0.995** |
+| mrz | 0.996 | 1.000 | 0.995 | 0.697 |
+| name | 0.991 | 0.996 | 0.995 | 0.919 |
+| birth_date | 1.000 | 0.989 | 0.995 | 0.969 |
+| expiry_date | 1.000 | 0.999 | 0.995 | 0.960 |
+| document_number | 0.994 | 0.963 | 0.995 | 0.933 |
+
+> La classe `photo` atteint un mAP@50-95 de **0.995** — quasi-parfait pour l'input du face-match (étape 2.2).
 
 Les courbes (PR, F1, confusion matrix) sont générées automatiquement par Ultralytics dans `runs/train/`.
 
