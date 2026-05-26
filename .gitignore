@@ -1,0 +1,85 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Test caches
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# ML / Training artifacts
+runs/
+wandb/
+mlruns/
+checkpoints/
+*.pt
+*.pth
+*.onnx
+*.torchscript
+*.engine
+
+# Data — NEVER commit raw data
+data/
+!data/.gitkeep
+*.tar
+*.tar.gz
+*.zip
+*.json.gz
+
+# But keep small fixtures for tests
+!tests/fixtures/*.json
+!tests/fixtures/*.png
+
+# Crops produits par l'inference
+crops/
+
+# Logs
+*.log
+logs/
+
+# Colab
+sample_data/
+
+# Secrets
+.env
+.env.local
+*.key
+secrets.yml

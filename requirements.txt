@@ -1,0 +1,24 @@
+# YOLOv11 + utilities
+ultralytics==8.3.40
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Image processing
+opencv-python-headless>=4.8.0
+Pillow>=10.0.0
+numpy>=1.24.0
+
+# Plotting / analysis
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# Data prep
+PyYAML>=6.0
+
+# Dataset download (Roboflow fallback)
+roboflow>=1.1.0
+gdown>=5.0.0
+
+# Tests
+pytest>=7.4.0
+pytest-cov>=4.1.0
