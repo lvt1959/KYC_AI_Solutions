@@ -50,7 +50,7 @@ pip install -r requirements.txt
 
 # 1. Telecharger le dataset via Roboflow
 export ROBOFLOW_API_KEY=your_key_here
-bash scripts/download_midv2020.sh
+bash scripts/download_dataset.sh
 
 # 2. Entrainer
 python -m src.train --data data/dataset/data.yaml --epochs 40 --model yolo11n
@@ -68,19 +68,33 @@ KYC_AI_Solutions/
 ├── README.md                     <- tu es ici
 ├── requirements.txt              <- deps pinned
 ├── .gitignore                    <- Python + ML
-├── docs/
-│   └── plan_technique.md         <- Justification des choix techniques
-├── notebooks/
-│   └── training_colab.ipynb      <- Pipeline complet end-to-end (Colab)
-├── src/
+│
+├── notebooks/                    <- Colab notebooks
+│   └── training_colab.ipynb      <- Pipeline complet end-to-end
+│
+├── src/                          <- Code source (importable)
 │   ├── config.py                 <- 33 classes, aliases, hyperparams
 │   ├── data_prep.py              <- Download Roboflow + legacy VIA->YOLO
 │   ├── train.py                  <- Entrainement CLI
 │   └── inference.py              <- predict_and_crop() + validate_for_kyc()
-├── scripts/
-│   └── download_midv2020.sh      <- Telechargement dataset (Roboflow ou legacy)
-└── tests/
-    └── test_conversion.py        <- Tests unitaires (conversion + validation KYC)
+│
+├── models/                       <- Weights entrainees (.gitignored)
+│   └── README.md                 <- Comment obtenir/generer les weights
+│
+├── data/                         <- Dataset telecharge (.gitignored)
+│   └── .gitkeep
+│
+├── results/                      <- Metriques, plots, exports (.gitignored)
+│   └── README.md                 <- Derniers resultats documentes
+│
+├── scripts/                      <- Scripts utilitaires
+│   └── download_dataset.sh       <- Telechargement dataset (Roboflow ou legacy)
+│
+├── docs/                         <- Documentation technique
+│   └── plan_technique.md         <- Justification des choix techniques
+│
+└── tests/                        <- Tests unitaires
+    └── test_pipeline.py          <- Data prep + validation KYC (31 tests)
 ```
 
 ---

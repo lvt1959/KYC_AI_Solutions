@@ -56,17 +56,27 @@ checkpoints/
 *.torchscript
 *.engine
 
-# Data — NEVER commit raw data
-data/
+# Data — NEVER commit raw data or datasets
+data/*
 !data/.gitkeep
-*.tar
-*.tar.gz
-*.zip
-*.json.gz
+
+# Models — weights are too large for git
+models/*
+!models/README.md
+
+# Results — generated during training
+results/*
+!results/README.md
 
 # But keep small fixtures for tests
 !tests/fixtures/*.json
 !tests/fixtures/*.png
+
+# Large archives
+*.tar
+*.tar.gz
+*.zip
+*.json.gz
 
 # Crops produits par l'inference
 crops/
