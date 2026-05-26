@@ -15,10 +15,10 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.11"
           cache: pip
 
-      - name: Install minimal deps (no ultralytics — too heavy for CI)
+      - name: Install minimal deps (no ultralytics -- too heavy for CI)
         run: |
           pip install --upgrade pip
           pip install pytest pillow pyyaml

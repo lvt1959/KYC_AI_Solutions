@@ -1,6 +1,18 @@
-"""Convert MIDV-2020 VIA annotations to YOLO format, then train/val/test split.
+"""Download GenMRP+MIDV-2020 dataset from Roboflow in YOLO format.
+
+Primary method (recommended, used in notebook):
+    Uses Roboflow API to download pre-annotated dataset in YOLOv11 format.
+    No manual conversion needed.
+
+Legacy method (fallback):
+    Convert raw MIDV-2020 VIA annotations to YOLO format.
+    Only needed if using the official MIDV-2020 source directly.
 
 Usage:
+    # Roboflow download (recommended)
+    python -m src.data_prep --roboflow --api-key YOUR_KEY --output data/dataset
+
+    # Legacy VIA conversion
     python -m src.data_prep --input data/raw --output data/yolo
 """
 from __future__ import annotations
@@ -13,14 +25,56 @@ from collections import Counter
 from pathlib import Path
 from typing import Dict, Iterable, Tuple
 
-from PIL import Image
-
-from src.config import CLASS_MAPPING, CLASS_NAMES, NUM_CLASSES
+from src.config import CLASS_NAMES, NUM_CLASSES
 
 
 # ────────────────────────────────────────────────────────────────────
-# Core conversion helpers
+# Roboflow download (primary method)
 # ────────────────────────────────────────────────────────────────────
+
+def download_from_roboflow(
+    api_key: str,
+    output_dir: str | Path = "data/dataset",
+    format: str = "yolov11",
+) -> Path:
+    """Download GenMRP+MIDV-2020 v1 from Roboflow Universe.
+
+    Returns the path to the downloaded dataset directory.
+    """
+    from roboflow import Roboflow
+
+    rf = Roboflow(api_key=api_key)
+    project = rf.workspace("maastricht-university").project("genmrp-midv-2020")
+    version = project.version(1)
+
+    dataset = version.download(format, location=str(output_dir))
+    return Path(dataset.location)
+
+
+# ────────────────────────────────────────────────────────────────────
+# Legacy: VIA JSON -> YOLO conversion helpers
+# ────────────────────────────────────────────────────────────────────
+
+# Generic label mapping for raw MIDV-2020 VIA annotations.
+# Maps diverse label strings to class indices (0-based).
+LEGACY_CLASS_MAPPING = {
+    # photo
+    "photo": 13, "portrait": 13, "face": 13, "photograph": 13, "face_image": 13,
+    # MRZ
+    "mrz_line_1": 0, "mrz_line_2": 1,
+    # dates
+    "date_of_birth": 2, "birth_date": 2, "dob": 2,
+    "date_of_expiry": 4, "expiry_date": 4, "expiration": 4,
+    "date_of_issue": 6,
+    # document
+    "document": 8, "document_code": 9, "document_number": 11,
+    # identifiers
+    "surname": 25, "name": 25, "primary_identifier": 25,
+    "given_names": 27, "secondary_identifier": 27,
+    # other
+    "nationality": 19, "signature": 31, "sex": 29,
+}
+
 
 def polygon_to_yolo_bbox(
     points_x: Iterable[float],
@@ -70,12 +124,17 @@ def convert_via_json(
     images_root: Path,
     out_images_dir: Path,
     out_labels_dir: Path,
-    mapping: Dict[str, int] = CLASS_MAPPING,
+    mapping: Dict[str, int] | None = None,
 ) -> Tuple[int, int, int]:
     """Convert one VIA JSON file.
 
     Returns (n_imgs_ok, n_imgs_skipped, n_boxes).
     """
+    from PIL import Image
+
+    if mapping is None:
+        mapping = LEGACY_CLASS_MAPPING
+
     with open(via_json_path) as f:
         via = json.load(f)
     metadata = via.get("_via_img_metadata", via)
@@ -179,7 +238,7 @@ def write_data_yaml(yolo_root: Path) -> Path:
     """Write Ultralytics data.yaml at yolo_root/data.yaml."""
     yaml_path = yolo_root / "data.yaml"
     lines = [
-        "# YOLOv11 dataset config — KYC step 2.1",
+        "# YOLO11 dataset config - KYC step 2.1",
         f"path: {yolo_root.resolve()}",
         "train: images/train",
         "val: images/val",
@@ -199,49 +258,65 @@ def write_data_yaml(yolo_root: Path) -> Path:
 # ────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="MIDV-2020 VIA → YOLO converter")
-    parser.add_argument("--input", type=Path, required=True,
-                        help="Folder containing extracted MIDV-2020 (with VIA JSONs)")
-    parser.add_argument("--output", type=Path, required=True,
-                        help="Output YOLO dataset root")
-    parser.add_argument("--train-ratio", type=float, default=0.7)
-    parser.add_argument("--val-ratio", type=float, default=0.2)
-    parser.add_argument("--seed", type=int, default=42)
+    parser = argparse.ArgumentParser(
+        description="Download dataset (Roboflow) or convert VIA -> YOLO (legacy)"
+    )
+    sub = parser.add_subparsers(dest="command")
+
+    # Roboflow download
+    dl = sub.add_parser("download", help="Download from Roboflow (recommended)")
+    dl.add_argument("--api-key", required=True, help="Roboflow API key")
+    dl.add_argument("--output", type=Path, default=Path("data/dataset"))
+
+    # Legacy conversion
+    conv = sub.add_parser("convert", help="Convert raw VIA JSON -> YOLO (legacy)")
+    conv.add_argument("--input", type=Path, required=True,
+                      help="Folder containing extracted MIDV-2020 (with VIA JSONs)")
+    conv.add_argument("--output", type=Path, required=True,
+                      help="Output YOLO dataset root")
+    conv.add_argument("--train-ratio", type=float, default=0.7)
+    conv.add_argument("--val-ratio", type=float, default=0.2)
+    conv.add_argument("--seed", type=int, default=42)
+
     args = parser.parse_args()
 
-    args.output.mkdir(parents=True, exist_ok=True)
-    tmp_imgs = args.output / "_tmp" / "images"
-    tmp_lbls = args.output / "_tmp" / "labels"
+    if args.command == "download":
+        path = download_from_roboflow(args.api_key, args.output)
+        print(f"Dataset downloaded to {path}")
 
-    ann_files = list(args.input.rglob("*.json"))
-    print(f"Found {len(ann_files)} VIA JSON files in {args.input}")
+    elif args.command == "convert":
+        args.output.mkdir(parents=True, exist_ok=True)
+        tmp_imgs = args.output / "_tmp" / "images"
+        tmp_lbls = args.output / "_tmp" / "labels"
 
-    label_counter: Counter = Counter()
-    total_ok = total_skip = total_boxes = 0
-    for ann in ann_files:
-        ok, skip, boxes = convert_via_json(
-            ann, ann.parent, tmp_imgs, tmp_lbls
-        )
-        total_ok += ok
-        total_skip += skip
-        total_boxes += boxes
+        ann_files = list(args.input.rglob("*.json"))
+        print(f"Found {len(ann_files)} VIA JSON files in {args.input}")
 
-    print(f"\nConversion complete:")
-    print(f"  {total_ok} images converted")
-    print(f"  {total_skip} skipped")
-    print(f"  {total_boxes} bounding boxes total")
+        total_ok = total_skip = total_boxes = 0
+        for ann in ann_files:
+            ok, skip, boxes = convert_via_json(ann, ann.parent, tmp_imgs, tmp_lbls)
+            total_ok += ok
+            total_skip += skip
+            total_boxes += boxes
 
-    print("\nSplitting…")
-    counts = split_dataset(tmp_imgs, tmp_lbls, args.output,
-                           args.train_ratio, args.val_ratio, args.seed)
-    for split, n in counts.items():
-        print(f"  {split:6s}: {n}")
+        print(f"\nConversion complete:")
+        print(f"  {total_ok} images converted")
+        print(f"  {total_skip} skipped")
+        print(f"  {total_boxes} bounding boxes total")
 
-    # Clean up tmp dirs
-    shutil.rmtree(args.output / "_tmp", ignore_errors=True)
+        print("\nSplitting...")
+        counts = split_dataset(tmp_imgs, tmp_lbls, args.output,
+                               args.train_ratio, args.val_ratio, args.seed)
+        for split, n in counts.items():
+            print(f"  {split:6s}: {n}")
 
-    yaml_path = write_data_yaml(args.output)
-    print(f"\ndata.yaml: {yaml_path}")
+        shutil.rmtree(args.output / "_tmp", ignore_errors=True)
+
+        yaml_path = write_data_yaml(args.output)
+        print(f"\ndata.yaml: {yaml_path}")
+
+    else:
+        parser.print_help()
 
 
 if __name__ == "__main__":

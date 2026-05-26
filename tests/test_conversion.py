@@ -1,11 +1,11 @@
-"""Unit tests for VIA→YOLO conversion and KYC validation rules."""
+"""Unit tests for data prep and KYC validation rules."""
 import json
 from pathlib import Path
 
 import pytest
 from PIL import Image
 
-from src.config import CLASS_NAMES, NUM_CLASSES
+from src.config import CLASS_NAMES, EXPIRY_CLASS, NUM_CLASSES, PHOTO_CLASS
 from src.data_prep import (
     convert_via_json,
     extract_label,
@@ -14,7 +14,7 @@ from src.data_prep import (
     via_region_to_polygon,
     write_data_yaml,
 )
-from src.inference import validate_detection_quality
+from src.inference import validate_for_kyc
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -22,7 +22,7 @@ from src.inference import validate_detection_quality
 # ────────────────────────────────────────────────────────────────────
 
 def test_polygon_to_yolo_bbox_axis_aligned():
-    """Square at center of 200x200 image → cx=0.5, cy=0.5, w=0.5, h=0.5."""
+    """Square at center of 200x200 image -> cx=0.5, cy=0.5, w=0.5, h=0.5."""
     xs = [50, 150, 150, 50]
     ys = [50, 50, 150, 150]
     cx, cy, w, h = polygon_to_yolo_bbox(xs, ys, 200, 200)
@@ -33,7 +33,7 @@ def test_polygon_to_yolo_bbox_axis_aligned():
 
 
 def test_polygon_to_yolo_bbox_clamped():
-    """Out-of-bounds polygon → values clamped to [0,1]."""
+    """Out-of-bounds polygon -> values clamped to [0,1]."""
     xs = [-10, 50, 50, -10]
     ys = [-10, -10, 50, 50]
     cx, cy, w, h = polygon_to_yolo_bbox(xs, ys, 100, 100)
@@ -44,7 +44,7 @@ def test_polygon_to_yolo_bbox_clamped():
 
 
 def test_polygon_to_yolo_bbox_full_image():
-    """Polygon covering entire image → cx=0.5, cy=0.5, w=1.0, h=1.0."""
+    """Polygon covering entire image -> cx=0.5, cy=0.5, w=1.0, h=1.0."""
     xs = [0, 640, 640, 0]
     ys = [0, 0, 480, 480]
     cx, cy, w, h = polygon_to_yolo_bbox(xs, ys, 640, 480)
@@ -165,7 +165,7 @@ def test_convert_via_json_writes_labels(tmp_path):
                 "name": "rect",
                 "x": 10, "y": 10, "width": 30, "height": 30,
             },
-            "region_attributes": {"field_name": "photo"},
+            "region_attributes": {"field_name": "face_image"},
         },
         {
             "shape_attributes": {
@@ -190,15 +190,15 @@ def test_convert_via_json_writes_labels(tmp_path):
     lines = lbl_files[0].read_text().strip().split("\n")
     assert len(lines) == 2
     cls_ids = sorted(int(line.split()[0]) for line in lines)
-    assert cls_ids == [0, 4]
+    assert cls_ids == [4, 13]  # date_of_expiry=4, face_image=13
 
 
 def test_convert_via_json_skips_unknown_labels(tmp_path):
-    """Regions with labels not in CLASS_MAPPING should be ignored."""
+    """Regions with labels not in mapping should be ignored."""
     via_path = _make_via_fixture(tmp_path, regions=[
         {
             "shape_attributes": {"name": "rect", "x": 0, "y": 0, "width": 50, "height": 50},
-            "region_attributes": {"field_name": "signature"},
+            "region_attributes": {"field_name": "unknown_field_xyz"},
         },
     ])
     out_imgs = tmp_path / "out_imgs"
@@ -219,7 +219,7 @@ def test_convert_via_json_skips_missing_image(tmp_path):
                 "regions": [
                     {
                         "shape_attributes": {"name": "rect", "x": 0, "y": 0, "width": 10, "height": 10},
-                        "region_attributes": {"field_name": "photo"},
+                        "region_attributes": {"field_name": "face_image"},
                     },
                 ],
             }
@@ -241,7 +241,7 @@ def test_convert_via_json_label_values_normalized(tmp_path):
     via_path = _make_via_fixture(tmp_path, regions=[
         {
             "shape_attributes": {"name": "rect", "x": 10, "y": 20, "width": 30, "height": 40},
-            "region_attributes": {"field_name": "mrz"},
+            "region_attributes": {"field_name": "MRZ_line_1"},
         },
     ])
     out_imgs = tmp_path / "out_imgs"
@@ -250,7 +250,7 @@ def test_convert_via_json_label_values_normalized(tmp_path):
 
     lbl_file = list(out_lbls.glob("*.txt"))[0]
     parts = lbl_file.read_text().strip().split()
-    assert int(parts[0]) == 1
+    assert int(parts[0]) == 0  # MRZ_line_1 = class 0
     for val in parts[1:]:
         assert 0.0 <= float(val) <= 1.0
 
@@ -268,7 +268,7 @@ def test_split_dataset_ratios(tmp_path):
 
     for i in range(10):
         Image.new("RGB", (50, 50), "red").save(imgs_dir / f"img_{i}.jpg")
-        (lbls_dir / f"img_{i}.txt").write_text(f"0 0.5 0.5 0.3 0.3")
+        (lbls_dir / f"img_{i}.txt").write_text("0 0.5 0.5 0.3 0.3")
 
     yolo_root = tmp_path / "yolo"
     counts = split_dataset(imgs_dir, lbls_dir, yolo_root)
@@ -306,94 +306,121 @@ def test_write_data_yaml(tmp_path):
 # ────────────────────────────────────────────────────────────────────
 
 def test_config_class_count():
-    assert NUM_CLASSES == 6
+    assert NUM_CLASSES == 33
     assert len(CLASS_NAMES) == NUM_CLASSES
 
 
+def test_config_photo_class_resolved():
+    assert PHOTO_CLASS == "face_image"
+
+
+def test_config_expiry_class_resolved():
+    assert EXPIRY_CLASS == "date_of_expiry"
+
+
 # ────────────────────────────────────────────────────────────────────
-# KYC validation rules
+# KYC validation rules (validate_for_kyc)
 # ────────────────────────────────────────────────────────────────────
+
+def _make_det(cls_name, conf=0.90):
+    return {"bbox": [0, 0, 10, 10], "conf": conf, "crop_path": ""}
+
 
 def test_validate_rejects_when_no_photo():
     result = {
         "detections": {
-            "expiry_date": {"bbox": [0, 0, 10, 10], "conf": 0.9, "crop_path": ""},
+            "date_of_expiry": _make_det("date_of_expiry"),
         },
-        "missing_fields": ["photo", "mrz", "name", "birth_date", "document_number"],
+        "kyc_critical": {"photo": None, "date_of_expiry": _make_det("date_of_expiry")},
+        "missing_fields": ["face_image"],
     }
-    quality = validate_detection_quality(result)
+    quality = validate_for_kyc(result)
     assert quality["status"] == "REJECTED"
-    assert any("photo" in w.lower() for w in quality["warnings"])
+    assert any("photo" in r.lower() for r in quality["reasons"])
 
 
 def test_validate_review_on_low_photo_conf():
+    photo_det = _make_det("face_image", conf=0.45)
     result = {
         "detections": {
-            "photo": {"bbox": [0, 0, 10, 10], "conf": 0.55, "crop_path": ""},
-            "expiry_date": {"bbox": [0, 0, 10, 10], "conf": 0.92, "crop_path": ""},
+            "face_image": photo_det,
+            "date_of_expiry": _make_det("date_of_expiry", conf=0.92),
         },
+        "kyc_critical": {"photo": photo_det, "date_of_expiry": _make_det("date_of_expiry")},
         "missing_fields": [],
     }
-    quality = validate_detection_quality(result)
+    quality = validate_for_kyc(result)
     assert quality["status"] == "REVIEW"
 
 
 def test_validate_ok_on_clean_detection():
+    photo_det = _make_det("face_image", conf=0.95)
+    expiry_det = _make_det("date_of_expiry", conf=0.92)
     result = {
         "detections": {
-            "photo": {"bbox": [0, 0, 10, 10], "conf": 0.95, "crop_path": ""},
-            "mrz": {"bbox": [0, 0, 10, 10], "conf": 0.93, "crop_path": ""},
-            "name": {"bbox": [0, 0, 10, 10], "conf": 0.91, "crop_path": ""},
-            "birth_date": {"bbox": [0, 0, 10, 10], "conf": 0.88, "crop_path": ""},
-            "expiry_date": {"bbox": [0, 0, 10, 10], "conf": 0.92, "crop_path": ""},
-            "document_number": {"bbox": [0, 0, 10, 10], "conf": 0.90, "crop_path": ""},
+            "face_image": photo_det,
+            "date_of_expiry": expiry_det,
+            "document": _make_det("document"),
+            "MRZ_line_1": _make_det("MRZ_line_1"),
         },
+        "kyc_critical": {"photo": photo_det, "date_of_expiry": expiry_det},
         "missing_fields": [],
     }
-    quality = validate_detection_quality(result)
+    quality = validate_for_kyc(result)
     assert quality["status"] == "OK"
-    assert quality["warnings"] == []
+    assert quality["reasons"] == []
 
 
 def test_validate_rejects_empty_detections():
-    result = {"detections": {}, "missing_fields": []}
-    quality = validate_detection_quality(result)
+    result = {
+        "detections": {},
+        "kyc_critical": {"photo": None, "date_of_expiry": None},
+        "missing_fields": [],
+    }
+    quality = validate_for_kyc(result)
     assert quality["status"] == "REJECTED"
 
 
-def test_validate_review_on_many_missing_fields():
+def test_validate_review_when_expiry_missing():
+    photo_det = _make_det("face_image", conf=0.95)
     result = {
         "detections": {
-            "photo": {"bbox": [0, 0, 10, 10], "conf": 0.95, "crop_path": ""},
+            "face_image": photo_det,
+            "document": _make_det("document"),
         },
-        "missing_fields": ["mrz", "name", "birth_date", "expiry_date"],
+        "kyc_critical": {"photo": photo_det, "date_of_expiry": None},
+        "missing_fields": ["date_of_expiry"],
     }
-    quality = validate_detection_quality(result)
+    quality = validate_for_kyc(result)
     assert quality["status"] == "REVIEW"
-    assert any("missing" in w.lower() for w in quality["warnings"])
+    assert any("expiration" in r.lower() for r in quality["reasons"])
 
 
 def test_validate_review_on_low_mean_confidence():
+    photo_det = _make_det("face_image", conf=0.70)
+    expiry_det = _make_det("date_of_expiry", conf=0.40)
     result = {
         "detections": {
-            "photo": {"bbox": [0, 0, 10, 10], "conf": 0.75, "crop_path": ""},
-            "mrz": {"bbox": [0, 0, 10, 10], "conf": 0.40, "crop_path": ""},
-            "name": {"bbox": [0, 0, 10, 10], "conf": 0.50, "crop_path": ""},
+            "face_image": photo_det,
+            "date_of_expiry": expiry_det,
+            "document": _make_det("document", conf=0.35),
         },
+        "kyc_critical": {"photo": photo_det, "date_of_expiry": expiry_det},
         "missing_fields": [],
     }
-    quality = validate_detection_quality(result)
+    quality = validate_for_kyc(result)
     assert quality["status"] == "REVIEW"
-    assert any("mean confidence" in w.lower() for w in quality["warnings"])
+    assert any("confiance moyenne" in r.lower() for r in quality["reasons"])
 
 
 def test_validate_rejected_takes_priority_over_review():
     """No photo = REJECTED, even if mean conf is also low."""
     result = {
         "detections": {
-            "mrz": {"bbox": [0, 0, 10, 10], "conf": 0.40, "crop_path": ""},
+            "MRZ_line_1": _make_det("MRZ_line_1", conf=0.40),
         },
-        "missing_fields": ["photo", "name", "birth_date", "expiry_date", "document_number"],
+        "kyc_critical": {"photo": None, "date_of_expiry": None},
+        "missing_fields": ["face_image", "date_of_expiry"],
     }
-    quality = validate_detection_quality(result)
+    quality = validate_for_kyc(result)
     assert quality["status"] == "REJECTED"
