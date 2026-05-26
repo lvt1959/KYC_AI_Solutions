@@ -65,7 +65,7 @@ kyc-doc-detection/
 ├── requirements.txt              ← deps pinned
 ├── .gitignore                    ← Python + ML
 ├── docs/
-│   └── plan_technique.md         ← Justification des choix (à lire pour la soutenance)
+│   └── plan_technique.md         ← Justification des choix techniques
 ├── notebooks/
 │   └── training_colab.ipynb      ← Pipeline complet end-to-end
 ├── src/
@@ -148,7 +148,6 @@ pytest tests/
   - Pourquoi MIDV-2020 et pas MIDV-500
   - Pourquoi YOLOv11 et pas RF-DETR
   - Stratégie d'entraînement détaillée
-  - **3 points à marteler en soutenance**
 
 ---
 

@@ -25,7 +25,7 @@ Le repo `fcakyon/midv500` est un outil de téléchargement/conversion qui couvre
 
 ### 1.2 Décision
 
-J'utilise **MIDV-2020** et je le justifie dans le rapport : c'est la version étendue de la même famille MIDV, et c'est le seul des trois qui contient les annotations field-level requises par l'énoncé. En soutenance : « MIDV-500 = corners only, MIDV-2020 = fields ; même série, vraie tâche. »
+J'utilise **MIDV-2020** : c'est la version étendue de la même famille MIDV, et c'est le seul des trois qui contient les annotations field-level requises par l'énoncé. MIDV-500 = corners only, MIDV-2020 = fields.
 
 > **Option de repli si le prof exige strictement MIDV-500 :** détecter le document entier sur MIDV-500, puis pré-annoter manuellement 200-300 images avec Roboflow Annotate pour les champs (~3h de boulot). Cette option est documentée en fin de notebook.
 
@@ -41,7 +41,7 @@ J'utilise **MIDV-2020** et je le justifie dans le rapport : c'est la version ét
 | Docs / tutos | ★★★★★ | ★★★ | ★★ |
 | Perfs sur petits datasets | ★★★★ | ★★★★ | ★★★★ |
 | Vitesse inférence (CPU) | ★★★★★ | ★★★ | ★★★★ |
-| Défendable en soutenance | ★★★★★ | ★★★★ | ★★★ |
+| Justification technique | ★★★★★ | ★★★★ | ★★★ |
 | Maturité écosystème | ★★★★★ | ★★ | ★★★ |
 
 YOLOv11 sorti fin 2024 par Ultralytics — état de l'art sur COCO pour la catégorie temps-réel, **45 % moins de paramètres que YOLOv8m** à mAP équivalente. Le format d'annotation YOLO (1 .txt par image avec `class x_center y_center w h` normalisés) est trivial à générer depuis n'importe quelle source.
@@ -188,7 +188,7 @@ Backbone : on **ne gèle rien** au début (les features bas niveau de COCO sont 
 
 Le notebook produit :
 - **Matrice de confusion** (val set)
-- **20 exemples visualisés** (10 succès + 10 échecs) → utiles pour la soutenance
+- **20 exemples visualisés** (10 succès + 10 échecs)
 - **Distribution des IoU** par classe
 - **Failure cases** triés par confiance → identifie les patterns d'erreur
 
@@ -248,7 +248,7 @@ Marge confortable sous la limite Colab free.
 
 ---
 
-## 9. Roadmap & extensions (bonus pour la soutenance)
+## 9. Roadmap & extensions
 
 ### Niveau 1 — MVP (livré dans le notebook)
 - ✅ Détection 6 classes sur MIDV-2020 photo
@@ -264,16 +264,6 @@ Marge confortable sous la limite Colab free.
 - Pipeline 2 étapes : YOLOv11 doc-corners (MIDV-500) → rectification homographique → YOLOv11 fields (MIDV-2020 sur images rectifiées). Boost mAP attendu : +5-8 pts car le modèle field-level voit toujours le doc dans la même orientation.
 - Fine-tune sur dataset privé avec docs FR (CNI, passeport, permis FR) — MIDV est mock, donc en prod il faut compléter.
 - Active learning : flagger les détections low-confidence pour annotation humaine.
-
----
-
-## 10. Pour la soutenance — 3 points à marteler
-
-1. **« J'ai choisi MIDV-2020 plutôt que MIDV-500 brut parce que MIDV-500 n'annote que les coins du document, pas les champs internes. MIDV-2020 est l'évolution officielle de la même famille avec les annotations field-level requises. »** → montre que tu as lu les datasets, pas juste pris le premier lien.
-
-2. **« YOLOv11 vs RF-DETR : j'ai privilégié YOLOv11 pour la maturité de l'écosystème et la simplicité du fine-tuning ; RF-DETR donnerait probablement +2-3 pts mAP mais avec un coût de complexité bien supérieur pour un gain marginal sur ce dataset. »** → montre que tu as comparé.
-
-3. **« J'ai désactivé le flip horizontal en augmentation parce que les dates et la MRZ ne sont pas symétriques — sinon le modèle apprend des features inversés inutiles. »** → un petit détail technique qui montre que tu as réfléchi au domaine.
 
 ---
 
