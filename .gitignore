@@ -56,21 +56,21 @@ checkpoints/
 *.torchscript
 *.engine
 
-# Data — NEVER commit raw data or datasets
-data/*
-!data/.gitkeep
+# Data — per-step datasets (.gitignored, keep .gitkeep)
+**/data/*
+!**/data/.gitkeep
 
-# Models — weights are too large for git
-models/*
-!models/README.md
+# Models — weights too large for git (keep READMEs)
+**/models/*
+!**/models/README.md
 
-# Results — generated during training
-results/*
-!results/README.md
+# Results — generated during training (keep READMEs)
+**/results/*
+!**/results/README.md
 
 # But keep small fixtures for tests
-!tests/fixtures/*.json
-!tests/fixtures/*.png
+!**/tests/fixtures/*.json
+!**/tests/fixtures/*.png
 
 # Large archives
 *.tar

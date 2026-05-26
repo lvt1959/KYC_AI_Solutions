@@ -7,8 +7,12 @@ on:
     branches: [main, master]
 
 jobs:
-  test:
+  test-step-2-1:
+    name: "Step 2.1 — Detection"
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: step_2_1_detection
     steps:
       - uses: actions/checkout@v4
 
@@ -17,6 +21,7 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
+          cache-dependency-path: step_2_1_detection/requirements.txt
 
       - name: Install minimal deps (no ultralytics -- too heavy for CI)
         run: |
