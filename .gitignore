@@ -52,6 +52,8 @@ mlruns/
 checkpoints/
 *.pt
 *.pth
+*.keras
+*.h5
 *.onnx
 *.torchscript
 *.engine
@@ -63,6 +65,7 @@ checkpoints/
 # Models — weights too large for git (keep READMEs)
 **/models/*
 !**/models/README.md
+!**/models/.gitkeep
 
 # Results — generated during training (keep READMEs)
 **/results/*
