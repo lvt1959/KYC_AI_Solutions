@@ -5,81 +5,113 @@ Pipeline KYC (Know Your Customer) complet : de l'image du document d'identite au
 ## Pipeline
 
 ```
-  step_1            step_2_1                step_2_2              step_3
-┌───────────┐     ┌───────────┐          ┌───────────┐        ┌─────────┐
-│ Classif.  │     │ Detection │ -photo-> │   Face    │ -----> │ Rapport │ --> APPROVED
-│   CNN     │ --> │  champs   │          │  Matching │        │   LLM   │    / REJECTED
-│ id/passp. │     │ (YOLO11n) │ -fields> │           │        │         │    / REVIEW
-└───────────┘     └───────────┘          └───────────┘        └─────────┘
- 2 classes         33 classes             selfie vs doc         synthese
- 224x224           face, dates,           ArcFace 512-dim       decision
-                   MRZ, signature         cosine distance       finale
+  Upload          Cadrage auto      Classification     Detection champs
+┌─────────┐     ┌───────────┐     ┌───────────┐     ┌───────────────┐
+│  Photo   │ --> │   YOLO    │ --> │    CNN     │ --> │   YOLO 33cl   │
+│ document │     │ crop+rot  │     │ id/passp.  │     │ + InsightFace │
+└─────────┘     └───────────┘     └───────────┘     └───────┬───────┘
+                                                            │
+                   ┌────────────────────────────────────────┘
+                   │
+              OCR expiration        Face Match           Rapport
+            ┌───────────┐       ┌───────────┐       ┌─────────┐
+            │  docTR +   │      │InsightFace│       │ Rapport │ --> APPROUVE
+            │ MRZ parse  │ ---> │  SCRFD +  │ ----> │   LLM   │    / REJETE
+            │ VALIDE/EXP │      │  ArcFace  │       │         │    / REVUE
+            └───────────┘       └───────────┘       └─────────┘
 ```
 
 ## Application Web
 
-L'application Streamlit integre les 4 etapes dans une interface unifiee.
+L'application Streamlit integre toutes les etapes dans une interface unifiee.
 
 ```bash
 cd app
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 streamlit run app.py
 ```
 
 Voir [`app/models/README.md`](app/models/README.md) pour obtenir les poids des modeles.
 
-## Etapes
+## Etapes detaillees
 
-| Etape | Dossier | Description | Modele |
-|---|---|---|---|
-| **1** | [`step_1_classification/`](step_1_classification/) | Classification binaire (CNI / Passeport) | CNN Keras (4 blocs conv, 224x224) |
-| **2.1** | [`step_2_1_detection/`](step_2_1_detection/) | Detection de 33 champs (mAP@50=0.989) | YOLO11n (GenMRP+MIDV-2020) |
-| **2.2** | [`step_2_2_face_match/`](step_2_2_face_match/) | Comparaison photo doc vs selfie | YOLOv8-Face + ArcFace buffalo_l |
-| **3** | [`step_3_rapport/`](step_3_rapport/) | Rapport KYC legal via LLM | OpenRouter (configurable) |
-| **App** | [`app/`](app/) | Application web Streamlit | Integre les 4 etapes |
+| Etape | Module | Description | Modele | Auto-DL |
+|---|---|---|---|---|
+| **0** | `detector.py` | Cadrage auto + rotation du document | YOLO11n (classe "document" + union champs) | Non |
+| **1** | `classifier.py` | Classification binaire (CNI / Passeport) | CNN Keras (4 blocs conv, 224x224) | Non |
+| **2.1** | `detector.py` | Detection de 33 champs + fallback visage | YOLO11n + InsightFace SCRFD | Partiel |
+| **2.2** | `expiry_check.py` | OCR date expiration + verification | docTR (DBNet+CRNN) + parsing MRZ | Oui |
+| **2.3** | `face_match.py` | Comparaison selfie vs document | InsightFace (SCRFD + ArcFace buffalo_l) | Oui |
+| **3** | `report.py` | Rapport KYC legal | OpenRouter LLM (owl-alpha) | - |
 
-## Comment les etapes se connectent
+## Decisions techniques
+
+### Face Match : InsightFace seul (pas YOLO-Face)
+
+InsightFace (`buffalo_l`) integre detection (SCRFD) + alignement + embedding (ArcFace) en un seul appel.
+YOLO-Face ne fait que la detection sans alignement, ce qui donne des embeddings moins precis.
+
+- **Fallback det_thresh** : si SCRFD ne detecte pas le visage a 0.25 (photos d'identite imprimees, hologrammes),
+  le seuil est temporairement baisse a 0.05 puis restaure.
+- **Seuil de decision** : distance cosine < 0.60 = MATCH.
+
+### OCR : docTR (pas Tesseract ni EasyOCR)
+
+Tesseract et EasyOCR echouent sur les photos reelles de documents (hologrammes, reflets, angles).
+docTR (DBNet + CRNN) est entraine specifiquement sur des documents et produit des resultats exploitables.
+
+**3 strategies d'extraction de la date d'expiration :**
+
+1. **MRZ** (passeports) — format OACI standardise, 190+ pays. La date est toujours au meme endroit : 6 chiffres YYMMDD apres le champ sexe. Le plus fiable.
+2. **Mots-cles** (CNI, titres de sejour) — cherche "VALABLE JUSQU'AU", "VALID UNTIL", "EXPIRY" puis la date a cote.
+3. **Fallback** — prend la date la plus tardive du document (naissance=passe, emission=passe, expiration=futur).
+
+### Cadrage automatique : double strategie
+
+Le YOLO 33-classes est entraine sur des templates synthetiques (MIDV-2020). Sur des documents reels :
+
+- **Strategy 1** : classe `document` detectee et assez grande (>20% de l'image) → crop avec marge 12%
+- **Strategy 2** : pas de `document` mais d'autres champs detectes → bounding box englobant + marge 40%
+- **Auto-rotation** : si le crop est en portrait (hauteur > largeur x 1.2), rotation 90 (docs = paysage)
+- **Filtre** : la detection "document" de 126x20px = le mot "document" sur la carte, pas le document entier
+
+### Detection de visage : fallback InsightFace
+
+Le YOLO 33-classes rate les visages sur les vrais documents (entraine sur des placeholders synthetiques).
+InsightFace SCRFD prend le relais automatiquement quand `face_image` n'est pas detecte.
+
+## API Python
 
 ```python
-# Etape 1 : classifier le document
-from app.pipeline.classifier import classify_document, load_classifier
-model = load_classifier("app/models/kyc_classifier_best.keras")
-cls = classify_document(img_bgr, model)  # -> {type_document, confiance}
-
-# Etape 2.1 : detecter les champs
-from app.pipeline.detector import predict_and_crop, validate_for_kyc
+# Cadrage auto
+from app.pipeline.detector import crop_document, load_detector
 model = load_detector("app/models/best.pt")
-result = predict_and_crop(img_bgr, model)
-photo_crop = result["kyc_critical"]["photo"]["crop_path"]       # --> step 2.2
-quality = validate_for_kyc(result)                              # --> OK/REVIEW/REJECTED
+crop = crop_document(img_bgr, model)  # -> {found, cropped, confidence}
 
-# Etape 2.2 : face matching
-from app.pipeline.face_match import run_face_match, load_face_models
-yolo_face, arcface = load_face_models()  # auto-download
-match = run_face_match(photo_id_bgr, selfie_bgr, yolo_face, arcface)
+# Classification
+from app.pipeline.classifier import classify_document, load_classifier
+clf = load_classifier("app/models/kyc_classifier_best.keras")
+cls = classify_document(crop["cropped"], clf)  # -> {type_document, confiance}
 
-# Etape 3 : rapport final
+# Detection champs
+from app.pipeline.detector import predict_and_crop, validate_for_kyc
+result = predict_and_crop(crop["cropped"], model, face_model=insightface_app)
+quality = validate_for_kyc(result)  # -> {status: OK/REVIEW/REJECTED}
+
+# OCR expiration
+from app.pipeline.expiry_check import lire_date_expiration, verifier_expiration
+ocr = lire_date_expiration(crop["cropped"])  # -> {date_texte, date_iso}
+verif = verifier_expiration(ocr["date_iso"])  # -> {statut: VALIDE/EXPIRE}
+
+# Face match
+from app.pipeline.face_match import run_face_match, load_face_model
+arcface = load_face_model()  # auto-download ~260MB
+match = run_face_match(doc_bgr, selfie_bgr, arcface)  # -> {result, crop_selfie, crop_id}
+
+# Rapport
 from app.pipeline.report import generer_rapport
 rapport = generer_rapport(..., api_key="sk-or-...")
-```
-
-## Quickstart par etape
-
-Chaque etape a son propre README, ses propres requirements, et fonctionne de maniere independante.
-
-```bash
-# Clone
-git clone https://github.com/lvt1959/KYC_AI_Solutions.git
-cd KYC_AI_Solutions
-
-# Application web (tout-en-un)
-cd app && pip install -r requirements.txt && streamlit run app.py
-
-# Ou par etape :
-cd step_1_classification    # CNN classification
-cd step_2_1_detection       # YOLO detection (pip install -r requirements.txt)
-cd step_2_2_face_match      # Face matching
-cd step_3_rapport           # Rapport LLM
 ```
 
 ## Structure du repo
@@ -90,41 +122,21 @@ KYC_AI_Solutions/
 ├── LICENSE
 │
 ├── app/                               <- Application web Streamlit
-│   ├── app.py                         # Interface principale
-│   ├── requirements.txt               # Toutes les dependances
-│   ├── models/                        # Poids des modeles (.gitignored)
-│   │   └── README.md                  # Instructions pour obtenir les poids
-│   └── pipeline/                      # Modules Python reutilisables
+│   ├── app.py                         # Interface 4 onglets
+│   ├── requirements.txt
+│   ├── models/                        # Poids (.gitignored)
+│   │   └── README.md
+│   └── pipeline/
 │       ├── classifier.py              # Etape 1 — CNN
-│       ├── detector.py                # Etape 2.1 — YOLO
-│       ├── face_match.py              # Etape 2.2 — ArcFace
-│       └── report.py                  # Etape 3 — LLM
+│       ├── detector.py                # Cadrage auto + YOLO 33cl + fallback visage
+│       ├── expiry_check.py            # OCR docTR + MRZ + verification expiration
+│       ├── face_match.py              # InsightFace (SCRFD + ArcFace)
+│       └── report.py                  # Rapport LLM (OpenRouter)
 │
 ├── step_1_classification/             <- CNN (id/passport)
-│   ├── model.md                       # Documentation du modele
-│   └── network.py                     # Architecture + entrainement
-│
 ├── step_2_1_detection/                <- YOLO11n (33 classes)
-│   ├── README.md
-│   ├── requirements.txt
-│   ├── notebooks/training_colab.ipynb
-│   ├── src/                           # config, data_prep, train, inference
-│   ├── models/                        # Weights (.gitignored)
-│   ├── data/                          # Dataset (.gitignored)
-│   ├── results/                       # Metriques et plots (.gitignored)
-│   ├── scripts/                       # download_dataset.sh
-│   ├── docs/                          # plan_technique.md
-│   └── tests/                         # 31 tests (pytest)
-│
-├── step_2_2_face_match/               <- YOLOv8-Face + ArcFace
-│   ├── README.md
-│   ├── requirements.txt
-│   └── notebooks/face_match_final.ipynb
-│
-├── step_3_rapport/                    <- Rapport LLM (OpenRouter)
-│   ├── README.md
-│   └── rapport_kyc.ipynb
-│
+├── step_2_2_face_match/               <- Notebook face match
+├── step_3_rapport/                    <- Notebook rapport LLM
 └── .github/workflows/test.yml         # CI
 ```
 
