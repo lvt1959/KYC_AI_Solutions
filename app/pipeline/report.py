@@ -36,7 +36,7 @@ def generer_rapport(
     confiance_match: str,
     distance: float,
     api_key: str,
-    model: str = "openrouter/auto",
+    model: str = "openrouter/owl-alpha",
 ) -> str:
     """Generate a legal KYC report via OpenRouter.
 

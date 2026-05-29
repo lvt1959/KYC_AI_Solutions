@@ -102,8 +102,8 @@ with st.sidebar:
     )
     llm_model = st.text_input(
         "Modele LLM",
-        value="openrouter/auto",
-        help="Ex: openrouter/auto, anthropic/claude-3.5-sonnet, etc.",
+        value="openrouter/owl-alpha",
+        help="Ex: openrouter/owl-alpha, openrouter/auto, anthropic/claude-3.5-sonnet, etc.",
     )
 
     st.divider()
