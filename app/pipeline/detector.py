@@ -32,14 +32,14 @@ PHOTO_CLASS = "face_image"
 EXPIRY_CLASS = "date_of_expiry"
 PHOTO_MIN_CONF = 0.60
 MEAN_CONF_THRESHOLD = 0.65
-DOCUMENT_MIN_CONF = 0.30  # Low threshold — we just need to find the doc boundary
+DOCUMENT_MIN_CONF = 0.15  # Very low — we just need to find the doc boundary, not classify
 
 
 def crop_document(
     img_bgr: np.ndarray,
     model,
     conf_threshold: float = DOCUMENT_MIN_CONF,
-    margin_pct: float = 0.02,
+    margin_pct: float = 0.12,
 ) -> dict[str, Any]:
     """Detect the document boundary and crop the image to it.
 
@@ -80,7 +80,10 @@ def crop_document(
     preds = model.predict(tmp.name, conf=conf_threshold, verbose=False)[0]
     Path(tmp.name).unlink(missing_ok=True)
 
-    # Find the "document" class detection with highest confidence
+    if preds.boxes is None or len(preds.boxes) == 0:
+        return result
+
+    # Strategy 1: Find the "document" class directly
     doc_cls_id = CLASS_NAMES.index(DOCUMENT_CLASS)
     best_doc = None
     best_conf = 0.0
@@ -92,13 +95,37 @@ def crop_document(
             best_conf = conf
             best_doc = box
 
-    if best_doc is None:
-        return result
+    # Check if "document" detection is big enough (not just the word "document" on the card)
+    used_strategy2 = False
+    if best_doc is not None:
+        bx1, by1, bx2, by2 = (int(v) for v in best_doc.xyxy[0].tolist())
+        doc_w, doc_h = bx2 - bx1, by2 - by1
+        # Must be at least 20% of the image in both dimensions
+        if doc_w > w * 0.2 and doc_h > h * 0.2:
+            x1, y1, x2, y2 = bx1, by1, bx2, by2
+        else:
+            best_doc = None  # Too small — fall through to Strategy 2
 
-    # Extract bbox with margin
-    x1, y1, x2, y2 = (int(v) for v in best_doc.xyxy[0].tolist())
-    margin_x = int((x2 - x1) * margin_pct)
-    margin_y = int((y2 - y1) * margin_pct)
+    if best_doc is None:
+        # Strategy 2: Compute bounding box from ALL detected fields
+        # The document contains all these fields, so their union ~= document area
+        all_boxes = preds.boxes.xyxy.cpu().numpy()
+        if len(all_boxes) < 2:
+            return result
+
+        x1 = int(all_boxes[:, 0].min())
+        y1 = int(all_boxes[:, 1].min())
+        x2 = int(all_boxes[:, 2].max())
+        y2 = int(all_boxes[:, 3].max())
+        best_conf = float(preds.boxes.conf.cpu().numpy().mean())
+        used_strategy2 = True
+
+    # Add margin — bigger for Strategy 2 because fields don't cover the card edges
+    actual_margin = 0.40 if used_strategy2 else margin_pct
+    box_w = x2 - x1
+    box_h = y2 - y1
+    margin_x = int(box_w * actual_margin)
+    margin_y = int(box_h * actual_margin)
     x1 = max(0, x1 - margin_x)
     y1 = max(0, y1 - margin_y)
     x2 = min(w, x2 + margin_x)
@@ -110,6 +137,12 @@ def crop_document(
     ch, cw = cropped.shape[:2]
     if ch < 100 or cw < 100:
         return result
+
+    # Auto-rotation: ID documents and passports are landscape format.
+    # If the crop is portrait (height > width * 1.2), the photo was taken
+    # with the phone rotated — we fix it by rotating 90° clockwise.
+    if ch > cw * 1.2:
+        cropped = cv2.rotate(cropped, cv2.ROTATE_90_CLOCKWISE)
 
     result["found"] = True
     result["cropped"] = cropped
@@ -218,24 +251,28 @@ def predict_and_crop(
 
     result["annotated_image"] = annotated
 
-    # ── Fallback: YOLO-Face for face detection ──
+    # ── Fallback: InsightFace (SCRFD) for face detection ──
     # The 33-class model is trained on synthetic templates (MIDV-2020) and
-    # often fails to detect real faces on real documents. YOLO-Face is trained
-    # on real face data and works reliably as a fallback.
+    # often fails to detect real faces on real documents. InsightFace's SCRFD
+    # detector is trained on real face data and works reliably as a fallback.
     if result["kyc_critical"]["photo"] is None and face_model is not None:
         try:
-            face_preds = face_model(img_bgr, conf=0.3, verbose=False, device="cpu")
-            face_boxes = face_preds[0].boxes
-            if face_boxes is not None and len(face_boxes) > 0:
-                # Pick the largest face (most likely the ID photo)
-                xyxys = face_boxes.xyxy.cpu().numpy()
-                confs = face_boxes.conf.cpu().numpy()
-                areas = [(x2 - x1) * (y2 - y1) for x1, y1, x2, y2 in xyxys]
-                idx = int(np.argmax(areas))
-                fx1, fy1, fx2, fy2 = [int(v) for v in xyxys[idx]]
+            faces = face_model.get(img_bgr)
+            # If no faces found, lower detection threshold temporarily
+            if not faces:
+                seuil_original = face_model.det_model.det_thresh
+                face_model.det_model.det_thresh = 0.05
+                faces = face_model.get(img_bgr)
+                face_model.det_model.det_thresh = seuil_original
+
+            if faces:
+                # Pick the face with highest detection score
+                best_face = max(faces, key=lambda f: f.det_score)
+                bbox = best_face.bbox.astype(int)
+                fx1, fy1, fx2, fy2 = bbox[0], bbox[1], bbox[2], bbox[3]
                 fx1, fy1 = max(0, fx1), max(0, fy1)
                 fx2, fy2 = min(w, fx2), min(h, fy2)
-                fconf = float(confs[idx])
+                fconf = float(best_face.det_score)
 
                 # Save face crop
                 face_crop = img_bgr[fy1:fy2, fx1:fx2]
@@ -247,7 +284,7 @@ def predict_and_crop(
                     "bbox": [fx1, fy1, fx2, fy2],
                     "conf": round(fconf, 4),
                     "crop_path": str(face_crop_path),
-                    "source": "yolo-face-fallback",
+                    "source": "insightface-fallback",
                 }
                 result["detections"][PHOTO_CLASS] = det
                 result["kyc_critical"]["photo"] = det

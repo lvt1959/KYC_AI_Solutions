@@ -11,10 +11,12 @@ tensorflow>=2.16.0
 # Step 2.1 — Field detection (YOLO11n)
 ultralytics>=8.3.0
 
-# Step 2.2 — Face match (YOLO-Face + ArcFace)
+# Step 2.2 — Face match (InsightFace SCRFD + ArcFace)
 insightface>=0.7.3
 onnxruntime>=1.18.0
-huggingface_hub>=0.25.0
+
+# Step 2.3 — Expiry date OCR (docTR)
+python-doctr[torch]>=1.0.0
 
 # Step 3 — Report generation (OpenRouter LLM)
 openai>=1.50.0

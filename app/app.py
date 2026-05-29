@@ -63,6 +63,9 @@ DEFAULTS = {
     # Step 2.1 results
     "detection": None,
     "validation": None,
+    # Expiry check
+    "expiry_result": None,
+    "expiry_verif": None,
     # Step 2.2 results
     "selfie_image": None,
     "face_match": None,
@@ -180,9 +183,9 @@ def cached_load_detector(path: str):
 
 
 @st.cache_resource
-def cached_load_face_models():
-    from pipeline.face_match import load_face_models
-    return load_face_models()
+def cached_load_face_model():
+    from pipeline.face_match import load_face_model
+    return load_face_model()
 
 
 # =====================================================================
@@ -378,13 +381,12 @@ with tab2:
                     from pipeline.detector import predict_and_crop, validate_for_kyc
                     det_model = cached_load_detector(detector_path)
 
-                    # Load YOLO-Face as fallback for face detection
+                    # Load InsightFace as fallback for face detection
                     # (the 33-class model misses real faces — trained on synthetic data)
                     face_fallback = None
                     try:
                         with st.spinner("Chargement du modele de detection de visages (fallback)..."):
-                            yolo_face, _ = cached_load_face_models()
-                            face_fallback = yolo_face
+                            face_fallback = cached_load_face_model()
                     except Exception:
                         pass
 
@@ -446,8 +448,61 @@ with tab2:
                     crop_img = cv2.imread(str(crop_path))
                     st.image(bgr_to_rgb(crop_img), width=200)
 
+            # ── Verification de la date d'expiration (LLM vision) ──
+            st.divider()
+            st.subheader("Verification de la date d'expiration")
+
+            if st.session_state.get("expiry_result") is not None:
+                # Already checked — show cached result
+                exp = st.session_state.expiry_result
+                if exp["success"] and exp.get("date_texte"):
+                    st.write(f"**Date lue :** {exp['date_texte']}")
+                    st.write(f"**Date ISO :** {exp['date_iso']}")
+                    verif = st.session_state.get("expiry_verif", {})
+                    if verif.get("statut") == "VALIDE":
+                        st.success(f"✅ Document VALIDE — expire dans {verif['jours_restants']} jours")
+                    elif verif.get("statut") == "EXPIRE":
+                        st.error(f"❌ Document EXPIRE depuis {abs(verif['jours_restants'])} jours")
+                    else:
+                        st.warning("⚠️ Date non interpretable")
+
+                    with st.expander("Texte OCR complet (debug)"):
+                        st.code(exp.get("ocr_complet", ""))
+                else:
+                    st.warning(f"⚠️ Impossible de lire la date : {exp.get('error', 'erreur inconnue')}")
+                    with st.expander("Texte OCR complet (debug)"):
+                        st.code(exp.get("ocr_complet", ""))
+            else:
+                if st.button("Verifier la date d'expiration (OCR)", type="primary"):
+                    with st.spinner("Lecture OCR de la date d'expiration (docTR)..."):
+                        from pipeline.expiry_check import lire_date_expiration, verifier_expiration
+
+                        # Essayer d'abord le crop date_of_expiry, puis fallback doc entier
+                        exp = None
+                        expiry_det = crit.get("date_of_expiry")
+                        if expiry_det and expiry_det.get("crop_path") and Path(expiry_det["crop_path"]).exists():
+                            crop_img = cv2.imread(expiry_det["crop_path"])
+                            exp = lire_date_expiration(crop_img)
+
+                        # Fallback: si le crop a rien donne, OCR sur le document entier
+                        if not exp or not exp.get("success"):
+                            exp = lire_date_expiration(st.session_state.doc_bgr)
+                        st.session_state.expiry_result = exp
+                        if exp["success"] and exp.get("date_iso"):
+                            verif = verifier_expiration(exp["date_iso"])
+                            st.session_state.expiry_verif = verif
+                            st.session_state._manual_expiry = exp["date_iso"]
+                        else:
+                            st.session_state.expiry_verif = {"statut": "INCONNU"}
+                        st.rerun()
+
+            # Final navigation
             if status != "REJECTED":
-                st.info("➡️ Passez a l'onglet **Face Match** pour la verification biometrique.")
+                expiry_status = (st.session_state.get("expiry_verif") or {}).get("statut")
+                if expiry_status == "EXPIRE":
+                    st.error("❌ Document expire — verification biometrique non recommandee.")
+                else:
+                    st.info("➡️ Passez a l'onglet **Face Match** pour la verification biometrique.")
 
 
 # =====================================================================
@@ -489,21 +544,16 @@ with tab3:
                     st.image(st.session_state.doc_image, caption="Document original", use_container_width=True)
 
             if st.button("Lancer le Face Match", type="primary", use_container_width=True):
-                with st.spinner("Chargement des modeles (premiere fois: ~30s)..."):
-                    yolo_face, arcface = cached_load_face_models()
+                with st.spinner("Chargement du modele InsightFace (premiere fois: ~30s)..."):
+                    arcface = cached_load_face_model()
 
                 with st.spinner("Verification biometrique en cours..."):
                     from pipeline.face_match import run_face_match, pretraiter_image
 
-                    # Get the ID photo
-                    if crit.get("photo") and crit["photo"].get("crop_path"):
-                        crop_path = Path(crit["photo"]["crop_path"])
-                        if crop_path.exists():
-                            photo_id_bgr = cv2.imread(str(crop_path))
-                        else:
-                            photo_id_bgr = st.session_state.doc_bgr
-                    else:
-                        photo_id_bgr = st.session_state.doc_bgr
+                    # Always use the full document image — InsightFace's SCRFD
+                    # finds the real face directly, avoiding bad crops from the
+                    # YOLO fallback (which can detect emblems as faces)
+                    photo_id_bgr = st.session_state.doc_bgr
 
                     # Save selfie to temp for processing
                     selfie_bgr = pil_to_bgr(selfie_pil)
@@ -512,7 +562,6 @@ with tab3:
                         match_result = run_face_match(
                             photo_id_bgr=photo_id_bgr,
                             selfie_input=selfie_bgr,
-                            yolo_model=yolo_face,
                             arcface_app=arcface,
                         )
                         st.session_state.face_match = match_result
