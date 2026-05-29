@@ -376,11 +376,23 @@ with tab2:
             if st.button("Lancer la detection", type="primary", use_container_width=True):
                 with st.spinner("Detection des champs en cours..."):
                     from pipeline.detector import predict_and_crop, validate_for_kyc
-                    model = cached_load_detector(detector_path)
+                    det_model = cached_load_detector(detector_path)
+
+                    # Load YOLO-Face as fallback for face detection
+                    # (the 33-class model misses real faces — trained on synthetic data)
+                    face_fallback = None
+                    try:
+                        with st.spinner("Chargement du modele de detection de visages (fallback)..."):
+                            yolo_face, _ = cached_load_face_models()
+                            face_fallback = yolo_face
+                    except Exception:
+                        pass
+
                     result = predict_and_crop(
                         st.session_state.doc_bgr,
-                        model,
+                        det_model,
                         image_name="document",
+                        face_model=face_fallback,
                     )
                     result["mode"] = "auto"
                     st.session_state.detection = result

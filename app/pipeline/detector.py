@@ -135,16 +135,20 @@ def predict_and_crop(
     output_dir: str | Path = "/tmp/kyc_crops",
     conf_threshold: float = 0.25,
     image_name: str = "document",
+    face_model=None,
 ) -> dict[str, Any]:
     """Detect all KYC fields and save crops.
 
     Parameters
     ----------
     img_bgr : BGR numpy array of the document
-    model : pre-loaded YOLO model
+    model : pre-loaded YOLO model (33 classes)
     output_dir : where to save crop images
     conf_threshold : YOLO confidence cutoff
     image_name : stem for naming the crop subfolder
+    face_model : optional pre-loaded YOLO-Face model for fallback face detection
+                 (the 33-class model is trained on synthetic data and often misses
+                 real faces — YOLO-Face is trained on real faces and fills the gap)
 
     Returns
     -------
@@ -213,6 +217,51 @@ def predict_and_crop(
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
     result["annotated_image"] = annotated
+
+    # ── Fallback: YOLO-Face for face detection ──
+    # The 33-class model is trained on synthetic templates (MIDV-2020) and
+    # often fails to detect real faces on real documents. YOLO-Face is trained
+    # on real face data and works reliably as a fallback.
+    if result["kyc_critical"]["photo"] is None and face_model is not None:
+        try:
+            face_preds = face_model(img_bgr, conf=0.3, verbose=False, device="cpu")
+            face_boxes = face_preds[0].boxes
+            if face_boxes is not None and len(face_boxes) > 0:
+                # Pick the largest face (most likely the ID photo)
+                xyxys = face_boxes.xyxy.cpu().numpy()
+                confs = face_boxes.conf.cpu().numpy()
+                areas = [(x2 - x1) * (y2 - y1) for x1, y1, x2, y2 in xyxys]
+                idx = int(np.argmax(areas))
+                fx1, fy1, fx2, fy2 = [int(v) for v in xyxys[idx]]
+                fx1, fy1 = max(0, fx1), max(0, fy1)
+                fx2, fy2 = min(w, fx2), min(h, fy2)
+                fconf = float(confs[idx])
+
+                # Save face crop
+                face_crop = img_bgr[fy1:fy2, fx1:fx2]
+                face_crop_path = out_dir / "face_image.jpg"
+                if face_crop.size > 0:
+                    cv2.imwrite(str(face_crop_path), face_crop, [cv2.IMWRITE_JPEG_QUALITY, 95])
+
+                det = {
+                    "bbox": [fx1, fy1, fx2, fy2],
+                    "conf": round(fconf, 4),
+                    "crop_path": str(face_crop_path),
+                    "source": "yolo-face-fallback",
+                }
+                result["detections"][PHOTO_CLASS] = det
+                result["kyc_critical"]["photo"] = det
+
+                # Draw on annotated image
+                cv2.rectangle(annotated, (fx1, fy1), (fx2, fy2), (0, 200, 0), 2)
+                label = f"face_image {fconf:.0%} (fallback)"
+                (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                cv2.rectangle(annotated, (fx1, fy1 - th - 8), (fx1 + tw + 4, fy1), (0, 200, 0), -1)
+                cv2.putText(annotated, label, (fx1 + 2, fy1 - 4),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                result["annotated_image"] = annotated
+        except Exception:
+            pass  # Fallback failed silently — face stays as missing
 
     expected = [c for c in ("document", PHOTO_CLASS, EXPIRY_CLASS) if c]
     result["missing_fields"] = [c for c in expected if c not in result["detections"]]
