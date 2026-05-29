@@ -27,10 +27,96 @@ CLASS_NAMES = [
     "signature_caption",
 ]
 
+DOCUMENT_CLASS = "document"
 PHOTO_CLASS = "face_image"
 EXPIRY_CLASS = "date_of_expiry"
 PHOTO_MIN_CONF = 0.60
 MEAN_CONF_THRESHOLD = 0.65
+DOCUMENT_MIN_CONF = 0.30  # Low threshold — we just need to find the doc boundary
+
+
+def crop_document(
+    img_bgr: np.ndarray,
+    model,
+    conf_threshold: float = DOCUMENT_MIN_CONF,
+    margin_pct: float = 0.02,
+) -> dict[str, Any]:
+    """Detect the document boundary and crop the image to it.
+
+    Uses the YOLO "document" class (class 8) to locate and frame
+    the ID document before classification or field detection.
+
+    Parameters
+    ----------
+    img_bgr : BGR numpy array (full photo)
+    model : pre-loaded YOLO model
+    conf_threshold : minimum confidence for document detection
+    margin_pct : extra margin around the crop (2% default)
+
+    Returns
+    -------
+    dict with:
+      - found: bool — whether a document was detected
+      - cropped: BGR numpy array of the cropped document (or original if not found)
+      - confidence: float — detection confidence (0 if not found)
+      - bbox: [x1, y1, x2, y2] — bounding box in original image
+      - original_shape: (h, w) of the original image
+    """
+    import tempfile
+
+    h, w = img_bgr.shape[:2]
+    result = {
+        "found": False,
+        "cropped": img_bgr,
+        "confidence": 0.0,
+        "bbox": [0, 0, w, h],
+        "original_shape": (h, w),
+    }
+
+    # YOLO needs a file path
+    tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+    cv2.imwrite(tmp.name, img_bgr)
+
+    preds = model.predict(tmp.name, conf=conf_threshold, verbose=False)[0]
+    Path(tmp.name).unlink(missing_ok=True)
+
+    # Find the "document" class detection with highest confidence
+    doc_cls_id = CLASS_NAMES.index(DOCUMENT_CLASS)
+    best_doc = None
+    best_conf = 0.0
+
+    for box in preds.boxes:
+        cls_id = int(box.cls.item())
+        conf = float(box.conf.item())
+        if cls_id == doc_cls_id and conf > best_conf:
+            best_conf = conf
+            best_doc = box
+
+    if best_doc is None:
+        return result
+
+    # Extract bbox with margin
+    x1, y1, x2, y2 = (int(v) for v in best_doc.xyxy[0].tolist())
+    margin_x = int((x2 - x1) * margin_pct)
+    margin_y = int((y2 - y1) * margin_pct)
+    x1 = max(0, x1 - margin_x)
+    y1 = max(0, y1 - margin_y)
+    x2 = min(w, x2 + margin_x)
+    y2 = min(h, y2 + margin_y)
+
+    cropped = img_bgr[y1:y2, x1:x2]
+
+    # Sanity check: crop must be at least 100x100
+    ch, cw = cropped.shape[:2]
+    if ch < 100 or cw < 100:
+        return result
+
+    result["found"] = True
+    result["cropped"] = cropped
+    result["confidence"] = round(best_conf, 4)
+    result["bbox"] = [x1, y1, x2, y2]
+
+    return result
 
 
 def load_detector(model_path: str | Path):

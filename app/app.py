@@ -52,6 +52,10 @@ st.markdown("""
 # =====================================================================
 DEFAULTS = {
     "step": 1,
+    # Step 0 — Document framing
+    "raw_image": None,
+    "raw_bgr": None,
+    "crop_result": None,
     # Step 1 results
     "doc_image": None,
     "doc_bgr": None,
@@ -201,69 +205,111 @@ tab1, tab2, tab3, tab4 = st.tabs([
 
 
 # =====================================================================
-# TAB 1 — Document Classification
+# TAB 1 — Document Upload + Auto-Crop + Classification
 # =====================================================================
 with tab1:
-    st.header("Etape 1 — Classification du document")
-    st.info("Uploadez votre document d'identite (CNI ou Passeport). Le modele CNN va determiner automatiquement le type de document.")
+    st.header("Etape 1 — Upload et classification du document")
+    st.info(
+        "Uploadez une photo de votre document d'identite (CNI ou Passeport). "
+        "Le systeme va **automatiquement cadrer** le document puis le classifier."
+    )
 
     uploaded_doc = st.file_uploader(
         "Document d'identite",
         type=["jpg", "jpeg", "png", "webp", "bmp"],
         key="upload_doc",
-        help="Formats supportes : JPG, PNG, WebP, BMP",
+        help="Formats supportes : JPG, PNG, WebP, BMP. La photo peut contenir du fond — le document sera detecte et recadre automatiquement.",
     )
 
     if uploaded_doc is not None:
         pil_img = Image.open(uploaded_doc)
-        st.session_state.doc_image = pil_img
-        st.session_state.doc_bgr = pil_to_bgr(pil_img)
+        raw_bgr = pil_to_bgr(pil_img)
+        st.session_state.raw_image = pil_img
+        st.session_state.raw_bgr = raw_bgr
 
-        col_img, col_res = st.columns([1, 1])
-        with col_img:
+        # ── Step 0: Auto-crop document ──
+        if st.session_state.crop_result is None and file_exists(detector_path):
+            with st.spinner("Cadrage automatique du document..."):
+                from pipeline.detector import crop_document
+                yolo = cached_load_detector(detector_path)
+                crop_res = crop_document(raw_bgr, yolo)
+                st.session_state.crop_result = crop_res
+
+                if crop_res["found"]:
+                    st.session_state.doc_bgr = crop_res["cropped"]
+                    st.session_state.doc_image = Image.fromarray(bgr_to_rgb(crop_res["cropped"]))
+                else:
+                    # No document detected — use original
+                    st.session_state.doc_bgr = raw_bgr
+                    st.session_state.doc_image = pil_img
+        elif st.session_state.crop_result is None:
+            # No YOLO model — skip auto-crop
+            st.session_state.doc_bgr = raw_bgr
+            st.session_state.doc_image = pil_img
+
+        # ── Display crop result ──
+        crop_res = st.session_state.crop_result
+
+        if crop_res and crop_res["found"]:
+            st.success(f"✅ Document detecte et recadre automatiquement (confiance : {crop_res['confidence']:.0%})")
+            col_before, col_after = st.columns(2)
+            with col_before:
+                # Draw bbox on original
+                viz = raw_bgr.copy()
+                x1, y1, x2, y2 = crop_res["bbox"]
+                cv2.rectangle(viz, (x1, y1), (x2, y2), (0, 255, 0), 3)
+                st.image(bgr_to_rgb(viz), caption="Photo originale (document detecte)", use_container_width=True)
+            with col_after:
+                st.image(st.session_state.doc_image, caption="Document recadre", use_container_width=True)
+        elif crop_res and not crop_res["found"]:
+            st.warning("⚠️ Aucun document detecte dans l'image — l'image originale sera utilisee telle quelle. Assurez-vous que le document est bien visible.")
+            st.image(pil_img, caption="Image originale (pas de cadrage)", use_container_width=True)
+        else:
             st.image(pil_img, caption="Document uploade", use_container_width=True)
 
-        with col_res:
-            if not file_exists(classifier_path):
-                st.warning(f"⚠️ Modele introuvable : `{classifier_path}`")
-                st.markdown("""
+        # ── Classification ──
+        st.divider()
+        st.subheader("Classification")
+
+        if not file_exists(classifier_path):
+            st.warning(f"⚠️ Modele CNN introuvable : `{classifier_path}`")
+            st.markdown("""
 **Comment obtenir le modele :**
 1. Ouvrir `step_1_classification/network.py` dans Google Colab
 2. Entrainer le CNN sur le dataset MIDV-2020
 3. Telecharger `kyc_classifier_best.keras`
 4. Le placer dans `app/models/`
-                """)
-                # Allow manual classification
-                st.divider()
-                st.subheader("Classification manuelle")
-                manual_type = st.selectbox(
-                    "Type de document",
-                    ["Carte Nationale d'Identite", "Passeport"],
-                )
-                manual_conf = st.slider("Confiance estimee", 0.0, 1.0, 0.95, 0.01)
-                if st.button("Valider la classification manuelle", type="primary"):
-                    st.session_state.classification = {
-                        "type_document": manual_type,
-                        "confiance": manual_conf,
-                        "classe_brute": "id" if "Identite" in manual_type else "passport",
-                        "mode": "manuel",
-                    }
+            """)
+            st.divider()
+            st.subheader("Classification manuelle")
+            manual_type = st.selectbox(
+                "Type de document",
+                ["Carte Nationale d'Identite", "Passeport"],
+            )
+            manual_conf = st.slider("Confiance estimee", 0.0, 1.0, 0.95, 0.01)
+            if st.button("Valider la classification manuelle", type="primary"):
+                st.session_state.classification = {
+                    "type_document": manual_type,
+                    "confiance": manual_conf,
+                    "classe_brute": "id" if "Identite" in manual_type else "passport",
+                    "mode": "manuel",
+                }
+                st.rerun()
+        else:
+            if st.button("Lancer la classification", type="primary", use_container_width=True):
+                with st.spinner("Classification en cours..."):
+                    from pipeline.classifier import classify_document
+                    clf_model = cached_load_classifier(classifier_path)
+                    result = classify_document(st.session_state.doc_bgr, clf_model)
+                    result["mode"] = "auto"
+                    st.session_state.classification = result
                     st.rerun()
-            else:
-                if st.button("Lancer la classification", type="primary", use_container_width=True):
-                    with st.spinner("Classification en cours..."):
-                        from pipeline.classifier import classify_document
-                        model = cached_load_classifier(classifier_path)
-                        result = classify_document(st.session_state.doc_bgr, model)
-                        result["mode"] = "auto"
-                        st.session_state.classification = result
-                        st.rerun()
 
     # Display results
     if st.session_state.classification:
         cls = st.session_state.classification
         st.divider()
-        st.subheader("Resultat")
+        st.subheader("Resultat de la classification")
 
         c1, c2, c3 = st.columns(3)
         c1.metric("Type de document", cls["type_document"])
@@ -275,7 +321,7 @@ with tab1:
         elif cls["confiance"] >= 0.70:
             st.warning(f"⚠️ Confiance moyenne — verifier manuellement : **{cls['type_document']}**")
         else:
-            st.error(f"❌ Confiance faible — document potentiellement non conforme")
+            st.error("❌ Confiance faible — document potentiellement non conforme")
 
         st.info("➡️ Passez a l'onglet **Detection des champs** pour continuer.")
 
